@@ -1,0 +1,9 @@
+{
+  "name": "cable-expert-assistant",
+  "version": "1.0.0",
+  "description": "电缆工程与商务AI专家助手",
+  "main": "api/generate.js",
+  "dependencies": {
+    "axios": "^1.6.0"
+  }
+}
