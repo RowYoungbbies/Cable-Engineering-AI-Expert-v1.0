@@ -1,66 +1,71 @@
-const axios = require('axios');
+const https = require('https');
 
 module.exports = async (req, res) => {
-  // 只接受 POST 请求
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const { userInput } = req.body;
-  if (!userInput || userInput.trim() === '') {
-    return res.status(400).json({ error: '请输入电缆型号或技术要求' });
-  }
-
-  // 你的专属专家 System Prompt（已按你的要求编译）
-  const SYSTEM_PROMPT = `你是拥有20年以上经验的国际电缆工程与商务AI专家。
-输出必须严格遵循以下格式，禁止科普、禁止模糊：
-【结论】
-（直接给出最终答案，如推荐型号/审核结果/转换结果）
-
-【结构解析】
-（拆解导体/绝缘/护套/铠装/屏蔽/电压/阻燃/耐火等）
-
-【对应国标型号】
-（如 WDZ-YJY / NH-YJV 等，若无法直接对应则说明）
-
-【判断依据】
-（列出关键匹配词或标准条文）
-
-【风险提示】
-（列出所有矛盾、不匹配项、缺失项，并标注【高/中/低置信度】）
-
-核心规则：
-- 遇到 CU/XLPE/SWA/PVC 必须自动拆解为中文行业术语（SWA=钢丝铠装，LSZH=低烟无卤）。
-- 主动检查绝缘冲突（PVC vs XLPE）、电压等级不匹配、芯数歧义（区分"2 set of 4C"和"8C"）。
-- 默认优先 GB/T，其次 IEC。
-- 未说明导体类别时默认 Class 2（绞合导体）。`;
-
-  try {
-    // 调用 DeepSeek API（国内直连）
-    const response = await axios.post(
-      'https://api.deepseek.com/v1/chat/completions',
-      {
-        model: 'deepseek-chat',
-        messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user', content: `请处理以下电缆技术内容：\n${userInput}` }
-        ],
-        temperature: 0.1,  // 越低越精确
-        max_tokens: 2500   // 给足空间，避免截断
-      },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${process.env.DEEPSEEK_API_KEY}`
-        }
+  let body = '';
+  req.on('data', chunk => { body += chunk; });
+  req.on('end', () => {
+    try {
+      const { userInput } = JSON.parse(body);
+      if (!userInput || userInput.trim() === '') {
+        return res.status(400).json({ error: '请输入内容' });
       }
-    );
-
-    const result = response.data.choices[0].message.content;
-    return res.status(200).json({ success: true, result });
-
-  } catch (error) {
-    console.error('AI 调用失败:', error.response?.data || error.message);
-    return res.status(500).json({ error: 'AI 处理失败，请检查密钥或稍后重试' });
-  }
+      handleRequest(userInput, res);
+    } catch (e) {
+      return res.status(400).json({ error: '无效请求格式' });
+    }
+  });
 };
+
+function handleRequest(userInput, res) {
+  const SYSTEM_PROMPT = `你是电缆专家，按【结论】【结构解析】【对应国标】【判断依据】【风险提示】格式输出，禁止科普，检测冲突。`;
+
+  const requestData = JSON.stringify({
+    model: 'deepseek-chat',
+    messages: [
+      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'user', content: userInput }
+    ],
+    temperature: 0.1,
+    max_tokens: 2500
+  });
+
+  const apiKey = process.env.DEEPSEEK_API_KEY;
+  if (!apiKey) return res.status(500).json({ error: '未配置 API 密钥' });
+
+  const options = {
+    hostname: 'api.deepseek.com',
+    path: '/v1/chat/completions',
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Length': Buffer.byteLength(requestData)
+    }
+  };
+
+  const request = https.request(options, (response) => {
+    let data = '';
+    response.on('data', chunk => { data += chunk; });
+    response.on('end', () => {
+      try {
+        const json = JSON.parse(data);
+        if (json.choices && json.choices[0] && json.choices[0].message) {
+          return res.status(200).json({ success: true, result: json.choices[0].message.content });
+        } else {
+          return res.status(500).json({ error: json.error?.message || 'AI 返回异常' });
+        }
+      } catch (e) {
+        return res.status(500).json({ error: '解析 AI 响应失败' });
+      }
+    });
+  });
+
+  request.on('error', (e) => {
+    return res.status(500).json({ error: '网络请求失败: ' + e.message });
+  });
+
+  request.write(requestData);
+  request.end();
+}
